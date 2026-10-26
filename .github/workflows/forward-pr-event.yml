@@ -51,11 +51,18 @@ jobs:
           ACCESS_TOKEN: ${{ steps.token.outputs.access_token }}
         run: |
           set -euo pipefail
+          # Flatten fields AO can reference as ${trigger.pr_title}, etc.
+          BODY="$(jq -c '{
+            action: .action,
+            pr_title: (.pull_request.title // ""),
+            pr_number: .pull_request.number,
+            repo_full_name: .repository.full_name
+          }' "${GITHUB_EVENT_PATH}")"
           HTTP_CODE="$(curl -sS -o /tmp/webhook_response.json -w "%{http_code}" \
             -X POST "${WEBHOOK_URL}" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${ACCESS_TOKEN}" \
-            --data-binary @"${GITHUB_EVENT_PATH}")"
+            --data-binary "${BODY}")"
           case "${HTTP_CODE}" in
             200|201|202|204) ;;
             *)
