@@ -1,0 +1,65 @@
+name: Forward PR event
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Obtain access token
+        id: token
+        env:
+          CLIENT_ID: ${{ secrets.WEBHOOK_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.WEBHOOK_CLIENT_SECRET }}
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          TOKEN_URL: ${{ secrets.TOKEN_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CLIENT_ID}" ] || [ -z "${CLIENT_SECRET}" ] || [ -z "${WEBHOOK_URL}" ]; then
+            echo "::error::Missing required repository secrets."
+            exit 1
+          fi
+          if [ -n "${TOKEN_URL}" ]; then
+            AUTH_URL="${TOKEN_URL}"
+          else
+            AUTH_URL="$(echo "${WEBHOOK_URL}" | sed -E 's#/api/v1/webhooks/.*#/api/v1/auth/token#')"
+          fi
+          TOKEN_RESPONSE="$(curl -sS -f -X POST "${AUTH_URL}" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=${CLIENT_ID}" \
+            --data-urlencode "client_secret=${CLIENT_SECRET}")"
+          ACCESS_TOKEN="$(echo "${TOKEN_RESPONSE}" | jq -r '.access_token')"
+          if [ -z "${ACCESS_TOKEN}" ] || [ "${ACCESS_TOKEN}" = "null" ]; then
+            echo "::error::Could not obtain access token."
+            exit 1
+          fi
+          echo "access_token=${ACCESS_TOKEN}" >> "${GITHUB_OUTPUT}"
+
+      - name: Deliver event
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          ACCESS_TOKEN: ${{ steps.token.outputs.access_token }}
+        run: |
+          set -euo pipefail
+          HTTP_CODE="$(curl -sS -o /tmp/webhook_response.json -w "%{http_code}" \
+            -X POST "${WEBHOOK_URL}" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+            --data-binary @"${GITHUB_EVENT_PATH}")"
+          case "${HTTP_CODE}" in
+            200|201|202|204) ;;
+            *)
+              echo "::error::Webhook returned HTTP ${HTTP_CODE}"
+              exit 1
+              ;;
+          esac
